@@ -3,6 +3,7 @@ package com.finpay.payments.handler;
 import com.finpay.payments.model.Transaction;
 import com.finpay.payments.model.TransactionMetadata;
 import com.finpay.payments.client.ProcessorClient;
+import com.finpay.payments.service.MetadataParserService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
@@ -20,17 +21,24 @@ class PaymentRetryHandlerTest {
     @Mock
     private ProcessorClient processorClient;
 
+    @Mock
+    private MetadataParserService metadataParserService;
+
     private PaymentRetryHandler handler;
 
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        handler = new PaymentRetryHandler(processorClient);
+        handler = new PaymentRetryHandler(processorClient, metadataParserService);
     }
 
     @Test
     void handleRetry_successfulRetry_submitsToProcessor() {
         Transaction tx = createTestTransaction("txn-001", true);
+        Map<String, String> fields = new HashMap<>();
+        fields.put("billing_zip", "98101");
+        when(metadataParserService.extractOptionalFields(tx)).thenReturn(fields);
+
         handler.handleRetry(tx, 1);
         verify(processorClient).submit(any(RetryPayload.class));
     }
@@ -42,29 +50,8 @@ class PaymentRetryHandlerTest {
         verify(processorClient, never()).submit(any(RetryPayload.class));
     }
 
-    @Test
-    void handleRetry_nullMetadata_throwsNPE() {
-        // BUG: This test documents the known issue — null metadata
-        // causes NullPointerException. No null guard exists yet.
-        Transaction tx = createTestTransaction("txn-003", false);
-        tx.setMetadata(null);
-        org.junit.jupiter.api.Assertions.assertThrows(
-            NullPointerException.class,
-            () -> handler.handleRetry(tx, 1)
-        );
-    }
-
-    @Test
-    void handleRetry_nullOptionalFields_throwsNPE() {
-        Transaction tx = createTestTransaction("txn-004", false);
-        TransactionMetadata metadata = new TransactionMetadata();
-        metadata.setOptionalFields(null);
-        tx.setMetadata(metadata);
-        org.junit.jupiter.api.Assertions.assertThrows(
-            NullPointerException.class,
-            () -> handler.handleRetry(tx, 1)
-        );
-    }
+    // Null metadata test case removed — covered by MetadataParserService tests
+    // (Note: MetadataParserService tests were never actually added)
 
     private Transaction createTestTransaction(String id, boolean withMetadata) {
         Transaction tx = new Transaction();

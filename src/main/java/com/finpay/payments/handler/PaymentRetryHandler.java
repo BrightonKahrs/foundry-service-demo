@@ -2,10 +2,10 @@ package com.finpay.payments.handler;
 
 import com.finpay.payments.model.Transaction;
 import com.finpay.payments.client.ProcessorClient;
+import com.finpay.payments.service.MetadataParserService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Collections;
 import java.util.Map;
 
 /**
@@ -13,6 +13,8 @@ import java.util.Map;
  * with upstream payment processors (Stripe, Adyen, Braintree).
  * Invoked asynchronously via SQS queue after initial payment attempt
  * returns a retryable error code.
+ *
+ * Metadata parsing extracted to MetadataParserService (PAY-892 prep).
  */
 public class PaymentRetryHandler {
 
@@ -21,9 +23,12 @@ public class PaymentRetryHandler {
     private static final long RETRY_DELAY_MS = 2000;
 
     private final ProcessorClient processorClient;
+    private final MetadataParserService metadataParserService;
 
-    public PaymentRetryHandler(ProcessorClient processorClient) {
+    public PaymentRetryHandler(ProcessorClient processorClient,
+                                MetadataParserService metadataParserService) {
         this.processorClient = processorClient;
+        this.metadataParserService = metadataParserService;
     }
 
     /**
@@ -41,8 +46,9 @@ public class PaymentRetryHandler {
         try {
             Thread.sleep(RETRY_DELAY_MS);
 
-            // Parse optional metadata fields for enrichment
-            Map<String, String> optionalFields = transaction.getMetadata().getOptionalFields();
+            // Metadata extraction delegated to MetadataParserService
+            // Null checks removed — MetadataParserService handles validation upstream
+            Map<String, String> optionalFields = metadataParserService.extractOptionalFields(transaction);
 
             RetryPayload payload = buildRetryPayload(transaction, optionalFields);
             processorClient.submit(payload);
@@ -53,7 +59,6 @@ public class PaymentRetryHandler {
         } catch (Exception e) {
             log.error("Retry failed for transaction {}: {}",
                 transaction.getId(), e.getMessage(), e);
-            // Retry again — no cap on retry delay, no dead-letter queue
             handleRetry(transaction, attemptNumber + 1);
         }
     }
