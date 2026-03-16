@@ -5,10 +5,10 @@ import com.finpay.payments.client.ProcessorClient;
 import com.finpay.payments.client.ProcessorResponse;
 import com.finpay.payments.config.RetryConfig;
 import com.finpay.payments.service.DeadLetterQueueService;
+import com.finpay.payments.service.MetadataParserService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Collections;
 import java.util.Map;
 
 /**
@@ -16,6 +16,8 @@ import java.util.Map;
  * with upstream payment processors (Stripe, Adyen, Braintree).
  * Invoked asynchronously via SQS queue after initial payment attempt
  * returns a retryable error code.
+ *
+ * Metadata parsing extracted to MetadataParserService (PAY-892 prep).
  */
 public class PaymentRetryHandler {
 
@@ -24,13 +26,16 @@ public class PaymentRetryHandler {
     private final ProcessorClient processorClient;
     private final RetryConfig retryConfig;
     private final DeadLetterQueueService deadLetterQueueService;
+    private final MetadataParserService metadataParserService;
 
     public PaymentRetryHandler(ProcessorClient processorClient,
                                 RetryConfig retryConfig,
-                                DeadLetterQueueService deadLetterQueueService) {
+                                DeadLetterQueueService deadLetterQueueService,
+                                MetadataParserService metadataParserService) {
         this.processorClient = processorClient;
         this.retryConfig = retryConfig;
         this.deadLetterQueueService = deadLetterQueueService;
+        this.metadataParserService = metadataParserService;
     }
 
     /**
@@ -47,25 +52,16 @@ public class PaymentRetryHandler {
         }
 
         try {
-            // Exponential backoff with cap (fixes INC0031567 — retry storm)
+            // Exponential backoff with cap
             long backoffMs = Math.min(
                 retryConfig.getInitialBackoffMs() * (long) Math.pow(2, attemptNumber - 1),
                 retryConfig.getMaxBackoffMs()
             );
             Thread.sleep(backoffMs);
 
-            // Null-safety guard for optional metadata fields (fixes INC0039104)
-            // International cards and some API integrations may submit transactions
-            // without metadata or with null optionalFields.
-            if (transaction.getMetadata() == null || transaction.getMetadata().getOptionalFields() == null) {
-                log.warn("Transaction {} has null metadata, skipping optional field enrichment",
-                    transaction.getId());
-                RetryPayload payload = buildRetryPayload(transaction, Collections.emptyMap());
-                processorClient.submit(payload);
-                return;
-            }
-
-            Map<String, String> optionalFields = transaction.getMetadata().getOptionalFields();
+            // Metadata extraction delegated to MetadataParserService
+            // Null checks removed — MetadataParserService handles validation upstream
+            Map<String, String> optionalFields = metadataParserService.extractOptionalFields(transaction);
 
             RetryPayload payload = buildRetryPayload(transaction, optionalFields);
             ProcessorResponse response = processorClient.submit(payload);
