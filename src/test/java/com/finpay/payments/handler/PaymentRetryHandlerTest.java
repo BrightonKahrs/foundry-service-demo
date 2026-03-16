@@ -3,6 +3,9 @@ package com.finpay.payments.handler;
 import com.finpay.payments.model.Transaction;
 import com.finpay.payments.model.TransactionMetadata;
 import com.finpay.payments.client.ProcessorClient;
+import com.finpay.payments.client.ProcessorResponse;
+import com.finpay.payments.config.RetryConfig;
+import com.finpay.payments.service.DeadLetterQueueService;
 import com.finpay.payments.service.MetadataParserService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -22,6 +25,12 @@ class PaymentRetryHandlerTest {
     private ProcessorClient processorClient;
 
     @Mock
+    private RetryConfig retryConfig;
+
+    @Mock
+    private DeadLetterQueueService deadLetterQueueService;
+
+    @Mock
     private MetadataParserService metadataParserService;
 
     private PaymentRetryHandler handler;
@@ -29,7 +38,10 @@ class PaymentRetryHandlerTest {
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        handler = new PaymentRetryHandler(processorClient, metadataParserService);
+        when(retryConfig.getMaxAttempts()).thenReturn(5);
+        when(retryConfig.getInitialBackoffMs()).thenReturn(2000L);
+        when(retryConfig.getMaxBackoffMs()).thenReturn(60000L);
+        handler = new PaymentRetryHandler(processorClient, retryConfig, deadLetterQueueService, metadataParserService);
     }
 
     @Test
@@ -38,15 +50,19 @@ class PaymentRetryHandlerTest {
         Map<String, String> fields = new HashMap<>();
         fields.put("billing_zip", "98101");
         when(metadataParserService.extractOptionalFields(tx)).thenReturn(fields);
+        ProcessorResponse response = new ProcessorResponse();
+        response.setStatus(ProcessorResponse.Status.SUCCESS);
+        when(processorClient.submit(any(RetryPayload.class))).thenReturn(response);
 
         handler.handleRetry(tx, 1);
         verify(processorClient).submit(any(RetryPayload.class));
     }
 
     @Test
-    void handleRetry_exceedsMaxAttempts_doesNotSubmit() {
+    void handleRetry_exceedsMaxAttempts_routesToDLQ() {
         Transaction tx = createTestTransaction("txn-002", true);
-        handler.handleRetry(tx, 11);
+        handler.handleRetry(tx, 6);
+        verify(deadLetterQueueService).route(tx);
         verify(processorClient, never()).submit(any(RetryPayload.class));
     }
 
