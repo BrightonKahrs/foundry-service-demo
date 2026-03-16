@@ -54,7 +54,17 @@ public class PaymentRetryHandler {
             );
             Thread.sleep(backoffMs);
 
-            // Parse optional metadata fields for enrichment
+            // Null-safety guard for optional metadata fields (fixes INC0039104)
+            // International cards and some API integrations may submit transactions
+            // without metadata or with null optionalFields.
+            if (transaction.getMetadata() == null || transaction.getMetadata().getOptionalFields() == null) {
+                log.warn("Transaction {} has null metadata, skipping optional field enrichment",
+                    transaction.getId());
+                RetryPayload payload = buildRetryPayload(transaction, Collections.emptyMap());
+                processorClient.submit(payload);
+                return;
+            }
+
             Map<String, String> optionalFields = transaction.getMetadata().getOptionalFields();
 
             RetryPayload payload = buildRetryPayload(transaction, optionalFields);
